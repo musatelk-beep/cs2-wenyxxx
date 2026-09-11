@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>🏁 Турбо-гонка</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            touch-action: none;
+            font-family: 'Arial Black', Arial, sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            border-radius: 16px;
+            box-shadow: 0 0 40px rgba(255, 200, 0, 0.3);
+            touch-action: none;
+            background: #1a1a2e;
+        }
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: white;
+            font-size: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 12px 22px;
+            border-radius: 14px;
+            border: 2px solid #f1c40f;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #ui span { color: #f1c40f; font-size: 28px; }
+        #gameover {
+            position: absolute;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.92);
+            padding: 40px 50px;
+            border-radius: 24px;
+            border: 3px solid #e74c3c;
+            z-index: 20;
+            text-align: center;
+            min-width: 280px;
+        }
+        #gameover h1 { color: #e74c3c; font-size: 38px; margin-bottom: 10px; }
+        #gameover .final-score { color: white; font-size: 26px; margin: 10px 0; }
+        #gameover .final-score span { color: #f1c40f; font-size: 34px; }
+        #gameover .best-score { color: #2ecc71; font-size: 18px; margin-bottom: 20px; }
+        #gameover button {
+            padding: 16px 50px;
+            font-size: 22px;
+            border: none;
+            border-radius: 16px;
+            background: linear-gradient(135deg, #f1c40f, #f39c12);
+            color: #000;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 0 30px rgba(241, 196, 15, 0.4);
+            transition: transform 0.2s;
+        }
+        #gameover button:active { transform: scale(0.92); }
+        #boost-indicator {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #2ecc71;
+            font-size: 16px;
+            background: rgba(0,0,0,0.7);
+            padding: 6px 18px;
+            border-radius: 20px;
+            border: 1px solid #2ecc71;
+            display: none;
+            z-index: 10;
+        }
+        #speed-display {
+            position: absolute;
+            bottom: 80px;
+            right: 20px;
+            color: #fff;
+            font-size: 18px;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 16px;
+            border-radius: 12px;
+            border: 1px solid #3498db;
+            z-index: 10;
+            font-family: 'Courier New', monospace;
+        }
+        #speed-display span { color: #3498db; font-size: 22px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">🏁 <span id="scoreDisplay">0</span></div>
+    <div id="boost-indicator">⚡ БУСТ АКТИВЕН</div>
+    <div id="speed-display">⚡ <span id="speedValue">0</span> км/ч</div>
+
+    <div id="gameover">
+        <h1>💥 КРАШ</h1>
+        <div class="final-score">Счёт: <span id="finalScore">0</span></div>
+        <div class="best-score">🏆 Рекорд: <span id="bestScore">0</span></div>
+        <button onclick="restartGame()">🔄 Ещё раз</button>
+    </div>
+
+    <canvas id="gameCanvas" width="400" height="700"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreSpan = document.getElementById('scoreDisplay');
+        const gameoverDiv = document.getElementById('gameover');
+        const finalSpan = document.getElementById('finalScore');
+        const bestSpan = document.getElementById('bestScore');
+        const boostIndicator = document.getElementById('boost-indicator');
+        const speedSpan = document.getElementById('speedValue');
+
+        const W = 400, H = 700;
+        const LANE_COUNT = 3;
+        const LANE_WIDTH = 80;
+        const ROAD_LEFT = 80;
+
+        // ===== ИГРОК =====
+        const player = {
+            x: 200, y: 580,
+            w: 38, h: 60,
+            lane: 1,
+            boosting: false,
+            boostTimer: 0,
+            color: '#e74c3c'
+        };
+
+        // ===== ВРАГИ =====
+        let enemies = [];
+        let enemyTimer = 0;
+        let score = 0;
+        let bestScore = localStorage.getItem('raceBest') || 0;
+        let gameRunning = true;
+        let bonuses = [];
+        let bonusTimer = 0;
+        let touchX = null;
+
+        // ===== СКОРОСТЬ =====
+        let baseSpeed = 5;
+        let currentSpeed = baseSpeed;
+
+        const carColors = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6', '#e67e22', '#1abc7c'];
+
+        // ===== ДОРОГА (движущаяся разметка) =====
+        let roadOffset = 0;
+
+        // ============================================================
+        //  РИСОВАНИЕ НАСТОЯЩЕЙ МАШИНЫ
+        // ============================================================
+        function drawRealCar(x, y, w, h, color, isPlayer, boosting) {
+            const r = 6;
+
+            // Тень
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 12;
+            ctx.shadowOffsetY = 4;
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.beginPath();
+            ctx.ellipse(x + w/2, y + h + 6, w/2 + 4, 6, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetY = 0;
+
+            // Кузов
+            ctx.shadowColor = boosting ? 'rgba(46, 204, 113, 0.6)' : 'rgba(0,0,0,0.3)';
+            ctx.shadowBlur = boosting ? 30 : 8;
+            
+            const grad = ctx.createLinearGradient(x, y, x + w, y);
+            if (isPlayer && boosting) {
+                grad.addColorStop(0, '#2ecc71');
+                grad.addColorStop(0.5, '#27ae60');
+                grad.addColorStop(1, '#2ecc71');
+            } else if (isPlayer) {
+                grad.addColorStop(0, '#e74c3c');
+                grad.addColorStop(0.5, '#c0392b');
+                grad.addColorStop(1, '#e74c3c');
+            } else {
+                grad.addColorStop(0, color);
+                grad.addColorStop(0.5, darkenColor(color, 20));
+                grad.addColorStop(1, color);
+            }
+            ctx.fillStyle = grad;
+            roundRect(ctx, x, y, w, h, r);
+            ctx.fill();
+
+            // Бамперы
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = 'rgba(40,40,40,0.6)';
+            roundRect(ctx, x + 4, y - 2, w - 8, 6, 3);
+            ctx.fill();
+            roundRect(ctx, x + 4, y + h - 4, w - 8, 6, 3);
+            ctx.fill();
+
+            // Боковые пороги
+            ctx.fillStyle = 'rgba(30,30,30,0.3)';
+            ctx.fillRect(x + 2, y + 16, 3, h - 32);
+            ctx.fillRect(x + w - 5, y + 16, 3, h - 32);
+
+            // Окна
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = 'rgba(135, 206, 250, 0.45)';
+            roundRect(ctx, x + 5, y + 6, w - 10, 12, 4);
+            ctx.fill();
+            roundRect(ctx, x + 5, y + h - 18, w - 10, 12, 4);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(135, 206, 250, 0.3)';
+            ctx.fillRect(x + 3, y + 20, 4, 14);
+            ctx.fillRect(x + w - 7, y + 20, 4, 14);
+
+            // Фары
+            ctx.shadowColor = '#f1c40f';
+            ctx.shadowBlur = isPlayer ? 15 : 8;
+            ctx.fillStyle = '#f1c40f';
+            ctx.beginPath();
+            ctx.ellipse(x + 7, y + 1, 5, 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(x + w - 7, y + 1, 5, 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = 'rgba(255,255,200,0.3)';
+            ctx.beginPath();
+            ctx.ellipse(x + 7, y + 1, 3, 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(x + w - 7, y + 1, 3, 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Стоп-сигналы
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#e74c3c';
+            ctx.shadowColor = '#e74c3c';
+            ctx.shadowBlur = 6;
+            ctx.beginPath();
+            ctx.ellipse(x + 6, y + h - 2, 4, 3, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(x + w - 6, y + h - 2, 4, 3, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#e74c3c';
+            ctx.shadowBlur = 4;
+            ctx.fillRect(x + w/2 - 5, y - 6, 10, 3);
+
+            // Колёса
+            ctx.shadowBlur = 0;
+            drawWheel(ctx, x - 3, y + 14, 8, 14);
+            drawWheel(ctx, x + w - 5, y + 14, 8, 14);
+            drawWheel(ctx, x - 3, y + h - 28, 8, 14);
+            drawWheel(ctx, x + w - 5, y + h - 28, 8, 14);
+
+            // Диски
+            ctx.fillStyle = '#555';
+            ctx.beginPath();
+            ctx.arc(x + 1, y + 21, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x + w - 1, y + 21, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x + 1, y + h - 21, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x + w - 1, y + h - 21, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#777';
+            for (let i = 0; i < 4; i++) {
+                const angle = i * Math.PI / 2;
+                const dx = Math.cos(angle) * 2.5;
+                const dy = Math.sin(angle) * 2.5;
+                ctx.beginPath();
+                ctx.arc(x + 1 + dx, y + 21 + dy, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(x + w - 1 + dx, y + 21 + dy, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(x + 1 + dx, y + h - 21 + dy, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(x + w - 1 + dx, y + h - 21 + dy, 1.2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Спойлер
+            ctx.fillStyle = 'rgba(30,30,30,0.7)';
+            ctx.fillRect(x + w/2 - 12, y - 10, 24, 4);
+            ctx.fillRect(x + w/2 - 8, y - 14, 16, 4);
+            ctx.fillRect(x + w/2 - 10, y - 6, 2, 6);
+            ctx.fillRect(x + w/2 + 8, y - 6, 2, 6);
+
+            // Выхлопная труба
+            ctx.fillStyle = '#444';
+            ctx.fillRect(x + w/2 - 3, y + h + 2, 6, 4);
+            ctx.fillStyle = '#555';
+            ctx.fillRect(x + w/2 - 2, y + h + 4, 4, 2);
+
+            // Буст-пламя
+            if (boosting) {
+                ctx.shadowBlur = 0;
+                for (let i = 0; i < 5; i++) {
+                    const xOff = (Math.random() - 0.5) * 12;
+                    const size = 4 + Math.random() * 10;
+                    const alpha = 0.1 + Math.random() * 0.4;
+                    const colors = ['#2ecc71', '#27ae60', '#f1c40f', '#e74c3c'];
+                    ctx.fillStyle = colors[Math.floor(Math.random() * colors.length)];
+                    ctx.globalAlpha = alpha;
+                    ctx.beginPath();
+                    ctx.arc(x + w/2 + xOff, y + h + 6 + Math.random() * 20, size/2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.globalAlpha = 1;
+            }
+
+            // Светоотражатели
+            ctx.fillStyle = 'rgba(241, 196, 15, 0.3)';
+            ctx.fillRect(x + 1, y + 24, 2, 4);
+            ctx.fillRect(x + w - 3, y + 24, 2, 4);
+            ctx.fillRect(x + 1, y + h - 28, 2, 4);
+            ctx.fillRect(x + w - 3, y + h - 28, 2, 4);
+
+            ctx.shadowBlur = 0;
+        }
+
+        // ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+        function drawWheel(ctx, x, y, w, h) {
+            ctx.fillStyle = '#1a1a1a';
+            ctx.shadowBlur = 4;
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            roundRect(ctx, x, y, w, h, 3);
+            ctx.fill();
+            ctx.fillStyle = '#2a2a2a';
+            ctx.shadowBlur = 0;
+            for (let i = 0; i < 3; i++) {
+                ctx.fillRect(x + 1, y + 2 + i * 4, w - 2, 2);
+            }
+        }
+
+        function roundRect(ctx, x, y, w, h, r) {
+            if (r > w/2) r = w/2;
+            if (r > h/2) r = h/2;
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.arcTo(x + w, y, x + w, y + h, r);
+            ctx.arcTo(x + w, y + h, x, y + h, r);
+            ctx.arcTo(x, y + h, x, y, r);
+            ctx.arcTo(x, y, x + w, y, r);
+            ctx.closePath();
+        }
+
+        function darkenColor(hex, amount) {
+            let c = hex.replace('#', '');
+            if (c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+            let r = parseInt(c.substring(0,2), 16);
+            let g = parseInt(c.substring(2,4), 16);
+            let b = parseInt(c.substring(4,6), 16);
+            r = Math.max(0, r - amount);
+            g = Math.max(0, g - amount);
+            b = Math.max(0, b - amount);
+            return `rgb(${r},${g},${b})`;
+        }
+
+        // ===== ЛОГИКА ИГРЫ =====
+        function spawnEnemy() {
+            const lane = Math.floor(Math.random() * LANE_COUNT);
+            const x = ROAD_LEFT + lane * LANE_WIDTH + (LANE_WIDTH - 38) / 2;
+            const color = carColors[Math.floor(Math.random() * carColors.length)];
+            const speed = currentSpeed * (0.5 + Math.random() * 0.4);
+            enemies.push({
+                x: x, y: -70, w: 38, h: 60,
+                color: color,
+                speed: speed,
+                scored: false
+            });
+        }
+
+        function spawnBonus() {
+            const lane = Math.floor(Math.random() * LANE_COUNT);
+            const x = ROAD_LEFT + lane * LANE_WIDTH + (LANE_WIDTH - 24) / 2;
+            bonuses.push({ x: x, y: -30, w: 24, h: 24, type: Math.random() < 0.5 ? 'coin' : 'boost' });
+        }
+
+        function collide(a, b) {
+            return a.x < b.x + b.w && a.x + a.w > b.x &&
+                   a.y < b.y + b.h && a.y + a.h > b.y;
+        }
+
+        function update() {
+            if (!gameRunning) return;
+
+            // ===== СКОРОСТЬ (растёт со счётом) =====
+            currentSpeed = baseSpeed + Math.floor(score / 10) * 0.5;
+            if (player.boosting) currentSpeed *= 1.6;
+            speedSpan.textContent = Math.floor(currentSpeed * 20);
+
+            // ===== ДВИЖЕНИЕ ДОРОГИ =====
+            roadOffset = (roadOffset + currentSpeed) % 50;
+
+            // ===== УПРАВЛЕНИЕ =====
+            if (touchX !== null) {
+                const diff = touchX - (player.x + player.w / 2);
+                if (diff > 8) {
+                    player.x += 6;
+                    player.lane = Math.min(2, Math.floor((player.x - ROAD_LEFT + LANE_WIDTH/2) / LANE_WIDTH));
+                } else if (diff < -8) {
+                    player.x -= 6;
+                    player.lane = Math.max(0, Math.floor((player.x - ROAD_LEFT + LANE_WIDTH/2) / LANE_WIDTH));
+                }
+                const targetX = ROAD_LEFT + player.lane * LANE_WIDTH + (LANE_WIDTH - player.w) / 2;
+                if (Math.abs(player.x - targetX) < 3) player.x = targetX;
+                player.x = Math.max(ROAD_LEFT, Math.min(ROAD_LEFT + LANE_COUNT * LANE_WIDTH - player.w, player.x));
+            }
+
+            // ===== БУСТ =====
+            if (player.boosting) {
+                player.boostTimer--;
+                if (player.boostTimer <= 0) {
+                    player.boosting = false;
+                    boostIndicator.style.display = 'none';
+                }
+            }
+
+            // ===== СПАВН ВРАГОВ =====
+            enemyTimer++;
+            const spawnRate = Math.max(12, 25 - Math.floor(score / 5));
+            if (enemyTimer > spawnRate) {
+                spawnEnemy();
+                enemyTimer = 0;
+            }
+
+            // ===== СПАВН БОНУСОВ =====
+            bonusTimer++;
+            if (bonusTimer > 70 && bonuses.length < 3) {
+                spawnBonus();
+                bonusTimer = 0;
+            }
+
+            // ===== ДВИЖЕНИЕ ВРАГОВ (с той же скоростью, что и дорога) =====
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const e = enemies[i];
+                e.y += currentSpeed * 0.7 + e.speed * 0.3;
+
+                if (collide(player, e)) {
+                    gameRunning = false;
+                    finalSpan.textContent = score;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        localStorage.setItem('raceBest', bestScore);
+                    }
+                    bestSpan.textContent = bestScore;
+                    gameoverDiv.style.display = 'flex';
+                    return;
+                }
+
+                if (e.y > H + 30) {
+                    enemies.splice(i, 1);
+                    if (!e.scored) { score++; scoreSpan.textContent = score; }
+                }
+            }
+
+            // ===== БОНУСЫ =====
+            for (let i = bonuses.length - 1; i >= 0; i--) {
+                const b = bonuses[i];
+                b.y += currentSpeed * 0.6;
+                if (collide(player, b)) {
+                    if (b.type === 'coin') { score += 3; scoreSpan.textContent = score; }
+                    else { player.boosting = true; player.boostTimer = 120; boostIndicator.style.display = 'block'; }
+                    bonuses.splice(i, 1);
+                    continue;
+                }
+                if (b.y > H + 30) bonuses.splice(i, 1);
+            }
+        }
+
+        // ===== ОТРИСОВКА =====
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+
+            // ===== ДОРОГА =====
+            const grad = ctx.createLinearGradient(0, 0, 0, H);
+            grad.addColorStop(0, '#1a1a2e');
+            grad.addColorStop(0.5, '#2c3e50');
+            grad.addColorStop(1, '#1a1a2e');
+            ctx.fillStyle = grad;
+            ctx.fillRect(ROAD_LEFT - 10, 0, LANE_COUNT * LANE_WIDTH + 20, H);
+            ctx.fillStyle = '#2c3e50';
+            ctx.fillRect(ROAD_LEFT, 0, LANE_COUNT * LANE_WIDTH, H);
+
+            // ===== РАЗМЕТКА (движется) =====
+            for (let lane = 0; lane < LANE_COUNT - 1; lane++) {
+                const x = ROAD_LEFT + (lane + 1) * LANE_WIDTH - 2;
+                ctx.strokeStyle = '#ecf0f1';
+                ctx.lineWidth = 4;
+                ctx.setLineDash([20, 30]);
+                ctx.lineDashOffset = -roadOffset * 2;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, H);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // ===== БОРДЮРЫ =====
+            ctx.fillStyle = '#e67e22';
+            ctx.fillRect(ROAD_LEFT - 10, 0, 10, H);
+            ctx.fillRect(ROAD_LEFT + LANE_COUNT * LANE_WIDTH, 0, 10, H);
+            for (let y = 0; y < H; y += 30) {
+                ctx.fillStyle = y % 60 < 30 ? '#f1c40f' : '#e67e22';
+                ctx.fillRect(ROAD_LEFT - 6, (y + roadOffset * 2) % H, 4, 8);
+                ctx.fillRect(ROAD_LEFT + LANE_COUNT * LANE_WIDTH + 2, (y + roadOffset * 2) % H, 4, 8);
+            }
+
+            // ===== БОНУСЫ =====
+            for (const b of bonuses) {
+                if (b.type === 'coin') {
+                    ctx.fillStyle = '#f1c40f';
+                    ctx.shadowColor = '#f1c40f';
+                    ctx.shadowBlur = 15;
+                    ctx.beginPath();
+                    ctx.arc(b.x + b.w/2, b.y + b.h/2, 14, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#f39c12';
+                    ctx.shadowBlur = 0;
+                    ctx.beginPath();
+                    ctx.arc(b.x + b.w/2, b.y + b.h/2, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#f1c40f';
+                    ctx.font = '14px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('$', b.x + b.w/2, b.y + b.h/2 + 5);
+                } else {
+                    ctx.fillStyle = '#2ecc71';
+                    ctx.shadowColor = '#2ecc71';
+                    ctx.shadowBlur = 25;
+                    ctx.beginPath();
+                    ctx.arc(b.x + b.w/2, b.y + b.h/2, 16, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '16px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('⚡', b.x + b.w/2, b.y + b.h/2 + 6);
+                }
+            }
+            ctx.shadowBlur = 0;
+
+            // ===== ВРАГИ =====
+            for (const e of enemies) {
+                drawRealCar(e.x, e.y, e.w, e.h, e.color, false, false);
+            }
+
+            // ===== ИГРОК =====
+            drawRealCar(player.x, player.y, player.w, player.h, player.color, true, player.boosting);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function restartGame() {
+            enemies = []; bonuses = [];
+            score = 0;
+            scoreSpan.textContent = '0';
+            player.x = ROAD_LEFT + LANE_WIDTH + (LANE_WIDTH - player.w) / 2;
+            player.y = 580;
+            player.lane = 1;
+            player.boosting = false;
+            player.boostTimer = 0;
+            boostIndicator.style.display = 'none';
+            gameRunning = true;
+            gameoverDiv.style.display = 'none';
+            touchX = null;
+            enemyTimer = 0;
+            bonusTimer = 0;
+            currentSpeed = baseSpeed;
+            roadOffset = 0;
+        }
+
+        // ===== УПРАВЛЕНИЕ =====
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const touch = e.touches[0];
+            touchX = (touch.clientX - rect.left) * scaleX;
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const touch = e.touches[0];
+            touchX = (touch.clientX - rect.left) * scaleX;
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            touchX = null;
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                player.x -= 12;
+                player.lane = Math.max(0, Math.floor((player.x - ROAD_LEFT + LANE_WIDTH/2) / LANE_WIDTH));
+                player.x = Math.max(ROAD_LEFT, Math.min(ROAD_LEFT + LANE_COUNT * LANE_WIDTH - player.w, player.x));
+                e.preventDefault();
+            }
+            if (e.key === 'ArrowRight' || e.key === 'd') {
+                player.x += 12;
+                player.lane = Math.min(2, Math.floor((player.x - ROAD_LEFT + LANE_WIDTH/2) / LANE_WIDTH));
+                player.x = Math.max(ROAD_LEFT, Math.min(ROAD_LEFT + LANE_COUNT * LANE_WIDTH - player.w, player.x));
+                e.preventDefault();
+            }
+            if (e.key === 'r' || e.key === 'R') {
+                if (!gameRunning) restartGame();
+            }
+        });
+
+        bestSpan.textContent = bestScore;
+        gameLoop();
+    </script>
+</body>
+</html>
